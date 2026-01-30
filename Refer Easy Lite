@@ -1,0 +1,319 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<title>📑 ReferEasy Lite – Academic Reference Manager</title>
+
+<!-- pdf.js -->
+<script src="https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.min.js"></script>
+<script>
+pdfjsLib.GlobalWorkerOptions.workerSrc =
+  "https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.worker.min.js";
+</script>
+
+<style>
+body { font-family: Arial, sans-serif; margin:20px; }
+h1 { margin:0; color:#2c3e50; }
+input, select, button { padding:6px; margin:4px; }
+ul { padding-left:20px; }
+li { margin-bottom:14px; }
+
+button {
+  transition: transform 0.05s ease, opacity 0.05s ease;
+}
+button:hover { opacity: 0.9; }
+button:active { transform: scale(0.96); opacity: 0.75; }
+button:focus-visible { outline: 2px solid #555; }
+
+button.copy { background:#3498db; color:white; border:none; cursor:pointer; margin-left:6px; }
+button.del { background:#e74c3c; color:white; border:none; cursor:pointer; margin-left:6px; }
+
+pre { background:#f4f4f4; padding:12px; white-space:pre-wrap; }
+
+.support { 
+  background:#f9f9f9; 
+  padding:18px; 
+  border-left:4px solid #3498db; 
+  margin-top:35px; 
+}
+.support button { 
+  background:#2c3e50; 
+  color:white; 
+  border:none; 
+  padding:10px 14px; 
+  cursor:pointer; 
+  border-radius:4px; 
+}
+#upiBox { 
+  display:none; 
+  margin-top:18px; 
+  padding-top:14px; 
+  border-top:1px dashed #bbb; 
+}
+#upiBox img { 
+  margin-top:10px; 
+  border:1px solid #ddd; 
+  padding:6px; 
+  background:white; 
+}
+</style>
+</head>
+
+<body>
+
+<h1>📑 ReferEasy Lite</h1>
+<p><i>Honest academic reference manager (Articles • Books • Chapters • URLs)</i></p>
+
+<hr>
+
+<h3>Add Reference</h3>
+
+<input id="refInput" size="80" placeholder="DOI / PMID / Title / URL">
+<select id="refType">
+  <option value="article" selected>Article / Review</option>
+  <option value="book">Book</option>
+  <option value="chapter">Book Chapter</option>
+  <option value="url">Website / URL</option>
+</select>
+<br>
+
+<b>OR upload PDF (first page DOI scan):</b>
+<input type="file" id="pdfInput" accept="application/pdf">
+<br>
+
+<button onclick="addReference()">Add</button>
+
+<hr>
+
+<h3>Library</h3>
+<ul id="library"></ul>
+
+<hr>
+
+<h3>Citation Style</h3>
+<select id="style">
+  <option value="vancouver" selected>Vancouver / NLM</option>
+  <option value="apa">APA</option>
+  <option value="mla">MLA</option>
+</select>
+
+<br><br>
+<button onclick="generateBibliography()">Generate Bibliography</button>
+<pre id="output"></pre>
+
+<div class="support">
+  <h3>Support ReferEasy (optional)</h3>
+  <p>ReferEasy Lite is a <b>free academic tool</b>. No ads. No tracking. No locked features.</p>
+  <p>If it saved you time, you may optionally support development with <b>₹20 / $1</b>.</p>
+  <button type="button" onclick="toggleUPI()">❤️ Support this project</button>
+  <div id="upiBox">
+    <p><a href="upi://pay?pa=cbijurica@oksbi&pn=ReferEasy&am=20&cu=INR">👉 Pay ₹20 via UPI</a></p>
+    <p style="font-size:13px;color:#555;">UPI ID: <b>cbijurica@oksbi</b></p>
+    <img src="GooglePay_QR_cbijuricaPersAccnt.png" alt="UPI QR – Support ReferEasy" width="220">
+    <p style="font-size:12px;color:#777;">Google Pay • PhonePe • Paytm</p>
+  </div>
+</div>
+
+<script>
+let references = JSON.parse(localStorage.getItem("refereasy_lite")) || [];
+let manuscriptOrder = [];
+
+function toggleUPI(){
+  const box = document.getElementById("upiBox");
+  box.style.display = box.style.display === "none" ? "block" : "none";
+}
+
+function isDuplicate(ref){
+  return references.some(r => {
+    if(ref.doi && r.doi) return ref.doi === r.doi;
+    if(ref.pmid && r.pmid) return ref.pmid === r.pmid;
+    if(!ref.doi && !ref.pmid && !r.doi && !r.pmid)
+      return ref.title && r.title &&
+        ref.title.toLowerCase() === r.title.toLowerCase();
+    return false;
+  });
+}
+
+async function extractDOIFromPDF(file){
+  const buffer = await file.arrayBuffer();
+  const pdf = await pdfjsLib.getDocument({ data: buffer }).promise;
+  const page = await pdf.getPage(1);
+  const text = await page.getTextContent();
+
+  const fullText = text.items
+    .map(i => i.str)
+    .join(" ")
+    .replace(/\s+/g, " ");
+
+  const doiRegex = /10\.\d{4,9}\/[-._;()/:A-Z0-9]+/i;
+  const match = fullText.match(doiRegex);
+  return match ? match[0] : "";
+}
+
+async function addReference(){
+  const input = refInput.value.trim();
+  const pdfFile = pdfInput.files[0];
+  const type = refType.value;
+
+  let ref = {
+    id: references.length + 1,
+    type, title:"", authors:"", journal:"",
+    year:"", pages:"", doi:"", pmid:"", url:""
+  };
+
+  try{
+    if(pdfFile){
+      ref.doi = await extractDOIFromPDF(pdfFile);
+      ref.title = pdfFile.name.replace(".pdf","");
+      ref.authors = "From PDF";
+    }
+    else if(input.startsWith("10.")){
+      ref.doi = input;
+      let r = await fetch(`https://api.crossref.org/works/${ref.doi}`);
+      let d = await r.json();
+      let m = d.message;
+      ref.title = m.title?.[0] || "";
+      ref.authors = m.author?.map(a=>`${a.family} ${a.given||""}`).join(", ");
+      ref.journal = m["container-title"]?.[0] || "";
+      ref.year = m.published?.["date-parts"]?.[0]?.[0] || "";
+    }
+    else if(/^\d+$/.test(input)){
+      ref.pmid = input;
+      let r = await fetch(`https://eutils.ncbi.nlm.nih.gov/entrez/eutils/esummary.fcgi?db=pubmed&id=${ref.pmid}&retmode=json`);
+      let d = await r.json();
+      let m = d.result[ref.pmid];
+      if(m){
+        ref.title = m.title || "";
+        ref.authors = m.authors?.map(a=>a.name).join(", ");
+        ref.journal = m.fulljournalname || "";
+        ref.year = m.pubdate?.slice(0,4) || "";
+        let doiItem = m.articleids?.find(a=>a.idtype==="doi");
+        ref.doi = doiItem?.value || "";
+      }
+    }
+    else if(type==="url"){
+      ref.title = input;
+      ref.url = input;
+      ref.authors = prompt("Author / Organization:") || "";
+      ref.year = prompt("Year:") || "";
+    }
+    else{
+      let r = await fetch(
+        `https://api.crossref.org/works?rows=1&query.title=${encodeURIComponent(input)}`
+      );
+      let d = await r.json();
+      let m = d.message.items[0];
+
+      if(m){
+        ref.title = m.title?.[0] || input;
+        ref.authors = m.author?.map(a=>`${a.family} ${a.given||""}`).join(", ");
+        ref.journal = m["container-title"]?.[0] || "";
+        ref.year = m.published?.["date-parts"]?.[0]?.[0] || "";
+        ref.doi = m.DOI || "";
+      } else {
+        ref.title = input;
+        ref.authors = prompt("Authors:") || "";
+        ref.year = prompt("Year:") || "";
+      }
+    }
+  }catch(e){ console.log(e); }
+
+  if(isDuplicate(ref)){
+    alert("This reference already exists in your library.");
+    return;
+  }
+
+  references.push(ref);
+  localStorage.setItem("refereasy_lite", JSON.stringify(references));
+  refInput.value=""; pdfInput.value="";
+  renderLibrary();
+}
+
+function renderLibrary(){
+  library.innerHTML="";
+  references.forEach(r=>{
+    let li=document.createElement("li");
+    li.innerHTML=`
+      <b>[${r.id}] ${r.authors}</b><br>
+      <i>${r.title}</i><br>
+      ${r.journal||""} ${r.year||""}<br>
+      ${r.doi?"DOI: "+r.doi:""}
+      ${r.pmid?" | PMID: "+r.pmid:""}
+      <br>
+      <button class="copy" onclick="copyCitation(${r.id})">Copy In-text</button>
+      <button class="del" onclick="removeRef(${r.id})">Delete</button>`;
+    library.appendChild(li);
+  });
+}
+
+function formatInText(ref, style){
+  let authors = ref.authors.split(",").map(a=>a.trim());
+  let firstSurname = authors[0].split(" ")[0];
+
+  if(style==="apa"){
+    if(authors.length===1) return `${firstSurname} (${ref.year})`;
+    if(authors.length===2){
+      let secondSurname = authors[1].split(" ")[0];
+      return `${firstSurname} & ${secondSurname} (${ref.year})`;
+    }
+    return `${firstSurname} et al. (${ref.year})`;
+  }
+
+  if(style==="mla"){
+    if(authors.length===1) return `${firstSurname} ${ref.year}`;
+    if(authors.length===2){
+      let secondSurname = authors[1].split(" ")[0];
+      return `${firstSurname} and ${secondSurname} ${ref.year}`;
+    }
+    return `${firstSurname} et al. ${ref.year}`;
+  }
+}
+
+function copyCitation(id){
+  let style = styleSel.value;
+  let ref = references.find(r=>r.id===id);
+  let txt="";
+
+  if(style==="vancouver"){
+    let idx=manuscriptOrder.indexOf(id);
+    if(idx===-1){ manuscriptOrder.push(id); idx=manuscriptOrder.length-1; }
+    txt=`[${idx+1}]`;
+  }
+  if(style==="apa" || style==="mla")
+    txt = formatInText(ref, style);
+
+  navigator.clipboard.writeText(txt);
+}
+
+function removeRef(id){
+  references = references.filter(r=>r.id!==id);
+  manuscriptOrder = manuscriptOrder.filter(i=>i!==id);
+  references.forEach((r,i)=>r.id=i+1);
+  localStorage.setItem("refereasy_lite", JSON.stringify(references));
+  renderLibrary();
+}
+
+function generateBibliography(){
+  let style=styleSel.value;
+  let list=style==="vancouver"&&manuscriptOrder.length
+    ? manuscriptOrder.map(i=>references.find(r=>r.id===i))
+    : references;
+
+  output.textContent=list.map((r,i)=>{
+    let doi=r.doi?` DOI: ${r.doi}`:"";
+    let pmid=r.pmid?`; PMID: ${r.pmid}`:"";
+    if(style==="vancouver") return `${i+1}. ${r.authors}. ${r.title}. ${r.journal} ${r.year}.${doi}${pmid}`;
+    if(style==="apa") return `${r.authors} (${r.year}). ${r.title}. ${r.journal}.${doi}`;
+    if(style==="mla") return `${r.authors}. "${r.title}." ${r.journal}, ${r.year}.${doi}`;
+  }).join("\n\n");
+}
+
+const library=document.getElementById("library");
+const output=document.getElementById("output");
+const styleSel=document.getElementById("style");
+
+renderLibrary();
+</script>
+
+</body>
+</html>
